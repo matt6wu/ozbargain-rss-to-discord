@@ -1,0 +1,26 @@
+name = "ozb-rss-worker"
+main = "src/worker.js"
+compatibility_date = "2024-10-01"
+account_id = "5d49a52b7817e67eb1667d5c7694efe4"
+
+kv_namespaces = [
+  { binding = "OZB_KV", id = "c6a2582669d74c8b9a06a8e56f57fffc", preview_id = "3139ce3ca2564859849edd69142c2aa4" }
+]
+
+[triggers]
+# 15-minute checks + 3-hour summaries (AEST=UTC+10): 00:00, 03:00, 06:00...
+crons = ["*/15 * * * *", "0 14,17,20,23,2,5,8,11 * * *"]
+
+[vars]
+# RSS source; change if OzBargain updates its feed URL
+RSS_URL = "https://www.ozbargain.com.au/feed"
+# Set to true if you want to notify on the first run
+FIRST_RUN_SEND = "true"
+# Optional filters
+KEYWORDS_INCLUDE = ""
+KEYWORDS_EXCLUDE = ""
+MIN_DISCOUNT = ""
+MAX_PRICE = ""
+HISTORY_ITEMS = "3"
+SUMMARY_LIMIT = "10"
+SEEN_GUIDS_LIMIT = "200"
