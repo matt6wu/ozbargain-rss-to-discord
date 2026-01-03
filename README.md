@@ -100,7 +100,7 @@ wrangler secret put DISCORD_USER_ID
    - `RSS_URL` (default `https://www.ozbargain.com.au/feed` for Front Page Deals)
    - `FIRST_RUN_SEND` (`true` to send on first run)
    - `HISTORY_ITEMS` (default `3`)
-   - `SUMMARY_LIMIT` (default `10`)
+   - `SUMMARY_LIMIT` (default `15`)
    - `SEEN_GUIDS_LIMIT` (default `200`, remembers recently sent items)
    - Optional filters: `KEYWORDS_INCLUDE`, `KEYWORDS_EXCLUDE`, `MIN_DISCOUNT`, `MAX_PRICE`
 
@@ -124,12 +124,18 @@ Optional (for @mention in Discord):
 wrangler secret put DISCORD_USER_ID
 ```
 
+For the `/ozb` slash command (Discord bot), also set:
+
+```bash
+wrangler secret put DISCORD_PUBLIC_KEY
+```
+
 If you want to override the feed URL or other settings, edit `wrangler.toml`:
 
 - `RSS_URL` (default: `https://www.ozbargain.com.au/feed`)
 - `FIRST_RUN_SEND` (`true` to send on first run)
 - `HISTORY_ITEMS` (default: `3`)
-- `SUMMARY_LIMIT` (default: `10`)
+- `SUMMARY_LIMIT` (default: `15`)
 - `SEEN_GUIDS_LIMIT` (default: `200`)
 - `KEYWORDS_INCLUDE`, `KEYWORDS_EXCLUDE`, `MIN_DISCOUNT`, `MAX_PRICE`
 
@@ -177,13 +183,63 @@ curl "https://<your-worker-url>/run?force=1&limit=1"
 
 The Worker is configured to send a Front Page summary every 3 hours based on AEST.
 
-Summary size is controlled by `SUMMARY_LIMIT` (default 10).
+Summary size is controlled by `SUMMARY_LIMIT` (default 15).
 
 You can manually trigger a summary:
 
 ```bash
 curl "https://<your-worker-url>/run?summary=1&limit=10"
 ```
+
+## Slash command (/ozb)
+
+This Worker supports a Discord slash command that returns the latest Front Page deals with rich formatting.
+
+### Features
+
+When you type `/ozb` in Discord, you'll receive:
+
+- **Rich embed cards** for each deal with OzBargain's signature orange color
+- **Thumbnail images** for visual identification
+- **Deal information**:
+  - 💰 Deal price
+  - 📊 Discount percentage
+  - 👍👎 Vote counts (upvotes/downvotes)
+  - 💬 Comment count
+- **Clickable titles** that link directly to the deal
+- **Description preview** (first 150 characters)
+- **Default: 15 deals** (configurable via `SUMMARY_LIMIT`)
+
+### Setup Steps
+
+1. Create a Discord Application + Bot at https://discord.com/developers/applications
+2. Copy the **Application ID** and **Public Key**.
+3. Set the **Interactions Endpoint URL** to:
+
+```
+https://<your-worker-url>/interactions
+```
+
+4. Set the public key as a secret:
+
+```bash
+wrangler secret put DISCORD_PUBLIC_KEY
+```
+
+5. Register the slash command (guild scope for faster updates):
+
+```bash
+curl -X POST "https://discord.com/api/v10/applications/<APP_ID>/guilds/<GUILD_ID>/commands" \
+  -H "Authorization: Bot <BOT_TOKEN>" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"ozb","description":"Show latest OzBargain Front Page deals"}'
+```
+
+6. Invite the bot to your server with the `applications.commands` scope.
+
+### Usage
+
+Type `/ozb` in Discord to receive the latest Front Page deals (top 15 by default).
 
 
 ## Daily summaries

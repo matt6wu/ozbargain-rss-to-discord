@@ -15,6 +15,9 @@ export default {
 
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
+    if (url.pathname === "/interactions") {
+      return handleDiscordInteraction(request, env);
+    }
     if (url.pathname === "/run") {
       const force = url.searchParams.get("force") === "1";
       const limit = toNumber(url.searchParams.get("limit"));
@@ -27,6 +30,117 @@ export default {
     return new Response("ok");
   },
 };
+
+async function handleDiscordInteraction(request, env) {
+  if (!env.DISCORD_PUBLIC_KEY) {
+    return new Response("Missing DISCORD_PUBLIC_KEY", { status: 500 });
+  }
+
+  const signature = request.headers.get("x-signature-ed25519");
+  const timestamp = request.headers.get("x-signature-timestamp");
+  if (!signature || !timestamp) {
+    return new Response("Unauthorized", { status: 401 });
+  }
+
+  const body = await request.text();
+  const isValid = await verifyDiscordSignature(
+    env.DISCORD_PUBLIC_KEY,
+    signature,
+    timestamp + body
+  );
+  if (!isValid) {
+    return new Response("Unauthorized", { status: 401 });
+  }
+
+  const payload = JSON.parse(body);
+  if (payload.type === 1) {
+    return jsonResponse({ type: 1 });
+  }
+
+  if (payload.type === 2 && payload.data?.name === "ozb") {
+    const rssUrl = env.RSS_URL || "https://www.ozbargain.com.au/feed";
+    const xml = await fetchRss(rssUrl, env.RSS_USER_AGENT || DEFAULT_USER_AGENT);
+    const items = parseRssItems(xml);
+    const limit = toNumber(env.SUMMARY_LIMIT) || 10;
+    const filteredItems = applyFilters(items, env).slice(0, limit);
+
+    if (!filteredItems.length) {
+      return jsonResponse({
+        type: 4,
+        data: {
+          content: "No items found.",
+          allowed_mentions: { parse: [] },
+        },
+      });
+    }
+
+    const embeds = filteredItems.map((item, index) => {
+      const dealPrice = item.pricing?.dealPrice;
+      const originalPrice = item.pricing?.originalPrice;
+      const discount = item.pricing?.discount;
+      const votesPos = item.ozbMeta?.votesPos;
+      const votesNeg = item.ozbMeta?.votesNeg || 0;
+      const comments = item.ozbMeta?.commentCount;
+
+      const fields = [];
+
+      if (Number.isFinite(dealPrice)) {
+        fields.push({
+          name: "💰 Price",
+          value: `$${dealPrice.toFixed(2)}`,
+          inline: true,
+        });
+      }
+
+      if (Number.isFinite(discount) && discount > 0) {
+        fields.push({
+          name: "📊 Discount",
+          value: `${discount}%`,
+          inline: true,
+        });
+      }
+
+      if (Number.isFinite(votesPos)) {
+        fields.push({
+          name: "👍 Votes",
+          value: `+${votesPos}${votesNeg > 0 ? ` / -${votesNeg}` : ""}`,
+          inline: true,
+        });
+      }
+
+      if (Number.isFinite(comments)) {
+        fields.push({
+          name: "💬 Comments",
+          value: `${comments}`,
+          inline: true,
+        });
+      }
+
+      return {
+        title: `${index + 1}. ${truncate(item.title, 200)}`,
+        url: item.link,
+        description: truncate(item.description, 150),
+        color: 0xff6a00,
+        thumbnail: item.image ? { url: item.image } : undefined,
+        fields: fields.length ? fields : undefined,
+      };
+    });
+
+    return jsonResponse({
+      type: 4,
+      data: {
+        content: "🔥 **Latest OzBargain Deals**",
+        embeds: embeds,
+        allowed_mentions: { parse: [] },
+      },
+    });
+  }
+
+  return jsonResponse({
+    type: 4,
+    data: { content: "Unknown command.", allowed_mentions: { parse: [] } },
+  });
+}
 
 async function run(env, options = {}) {
   if (!env.DISCORD_WEBHOOK_URL) {
@@ -529,6 +643,33 @@ function jsonResponse(data) {
   return new Response(JSON.stringify(data, null, 2), {
     headers: { "content-type": "application/json" },
   });
+}
+
+async function verifyDiscordSignature(publicKeyHex, signatureHex, message) {
+  try {
+    const keyBytes = hexToBytes(publicKeyHex);
+    const sigBytes = hexToBytes(signatureHex);
+    const data = new TextEncoder().encode(message);
+    const key = await crypto.subtle.importKey(
+      "raw",
+      keyBytes,
+      { name: "Ed25519" },
+      false,
+      ["verify"]
+    );
+    return crypto.subtle.verify("Ed25519", key, sigBytes, data);
+  } catch {
+    return false;
+  }
+}
+
+function hexToBytes(hex) {
+  const clean = hex.trim();
+  const bytes = new Uint8Array(clean.length / 2);
+  for (let i = 0; i < bytes.length; i++) {
+    bytes[i] = parseInt(clean.substr(i * 2, 2), 16);
+  }
+  return bytes;
 }
 
 async function getSeenGuids(env) {
