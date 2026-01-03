@@ -16,7 +16,7 @@ export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
     if (url.pathname === "/interactions") {
-      return handleDiscordInteraction(request, env);
+      return handleDiscordInteraction(request, env, ctx);
     }
     if (url.pathname === "/run") {
       const force = url.searchParams.get("force") === "1";
@@ -31,7 +31,7 @@ export default {
   },
 };
 
-async function handleDiscordInteraction(request, env) {
+async function handleDiscordInteraction(request, env, ctx) {
   if (!env.DISCORD_PUBLIC_KEY) {
     return new Response("Missing DISCORD_PUBLIC_KEY", { status: 500 });
   }
@@ -58,20 +58,33 @@ async function handleDiscordInteraction(request, env) {
   }
 
   if (payload.type === 2 && payload.data?.name === "ozb") {
+    // Acknowledge immediately to prevent timeout
+    ctx.waitUntil(handleOzbCommand(payload, env));
+    return jsonResponse({
+      type: 5, // DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE
+    });
+  }
+
+  return jsonResponse({
+    type: 4,
+    data: { content: "Unknown command.", allowed_mentions: { parse: [] } },
+  });
+}
+
+async function handleOzbCommand(payload, env) {
+  try {
     const rssUrl = env.RSS_URL || "https://www.ozbargain.com.au/feed";
     const xml = await fetchRss(rssUrl, env.RSS_USER_AGENT || DEFAULT_USER_AGENT);
     const items = parseRssItems(xml);
-    const limit = toNumber(env.SUMMARY_LIMIT) || 10;
+    const limit = toNumber(env.SUMMARY_LIMIT) || 15;
     const filteredItems = applyFilters(items, env).slice(0, limit);
 
     if (!filteredItems.length) {
-      return jsonResponse({
-        type: 4,
-        data: {
-          content: "No items found.",
-          allowed_mentions: { parse: [] },
-        },
+      await sendFollowUp(payload, {
+        content: "No items found.",
+        allowed_mentions: { parse: [] },
       });
+      return;
     }
 
     const embeds = filteredItems.map((item, index) => {
@@ -126,20 +139,44 @@ async function handleDiscordInteraction(request, env) {
       };
     });
 
-    return jsonResponse({
-      type: 4,
-      data: {
-        content: "🔥 **Latest OzBargain Deals**",
-        embeds: embeds,
-        allowed_mentions: { parse: [] },
-      },
+    // Discord limit: max 10 embeds per message
+    const maxEmbedsPerMessage = 10;
+
+    // Send first batch (up to 10)
+    await sendFollowUp(payload, {
+      content: "🔥 **Latest OzBargain Deals**",
+      embeds: embeds.slice(0, maxEmbedsPerMessage),
+      allowed_mentions: { parse: [] },
+    });
+
+    // Send remaining embeds in additional messages if needed
+    if (embeds.length > maxEmbedsPerMessage) {
+      for (let i = maxEmbedsPerMessage; i < embeds.length; i += maxEmbedsPerMessage) {
+        await sendFollowUp(payload, {
+          embeds: embeds.slice(i, i + maxEmbedsPerMessage),
+          allowed_mentions: { parse: [] },
+        });
+      }
+    }
+  } catch (error) {
+    await sendFollowUp(payload, {
+      content: `Error: ${error.message}`,
+      allowed_mentions: { parse: [] },
     });
   }
+}
 
-  return jsonResponse({
-    type: 4,
-    data: { content: "Unknown command.", allowed_mentions: { parse: [] } },
+async function sendFollowUp(payload, data) {
+  const url = `https://discord.com/api/v10/webhooks/${payload.application_id}/${payload.token}`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(data),
   });
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`Follow-up failed: ${res.status} ${body}`);
+  }
 }
 
 async function run(env, options = {}) {

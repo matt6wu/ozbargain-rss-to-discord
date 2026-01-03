@@ -209,6 +209,8 @@ When you type `/ozb` in Discord, you'll receive:
 - **Clickable titles** that link directly to the deal
 - **Description preview** (first 150 characters)
 - **Default: 15 deals** (configurable via `SUMMARY_LIMIT`)
+- **Automatic message splitting**: Discord limits messages to 10 embeds. If you request more than 10 deals, they'll be sent in multiple messages automatically (e.g., 15 deals = 2 messages with 10 + 5)
+- **Deferred response**: Uses Discord's deferred response mechanism to prevent timeout errors when fetching and parsing RSS feeds
 
 ### Setup Steps
 
