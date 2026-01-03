@@ -1,14 +1,27 @@
 # OzBargain RSS Worker
 
-Cloudflare Worker that monitors the OzBargain RSS feed and pushes new deals to Discord via webhook.
+Cloudflare Worker that monitors the OzBargain RSS feed and pushes new deals to Discord via webhook with rich formatting and images.
+
+## ✨ Key Features
+
+- 🔔 **Automatic monitoring** - Checks every 15 minutes for new deals
+- 📊 **3-hour summaries** - Curated Front Page summaries 8 times daily
+- 💬 **Discord slash command** - `/ozb` to query latest deals on demand
+- 🖼️ **Rich embeds** - Beautiful cards with images, prices, votes, and comments
+- 🎨 **Color coding** - Red for new deals, orange for queries/summaries
+- ⏱️ **Smart deduplication** - Never see the same deal twice
+- 🔍 **Flexible filters** - Keywords, discount %, price limits
+- 📱 **Mobile-friendly** - @mentions and optimized for phone notifications
+- 🚀 **Fast & reliable** - Cloudflare Workers edge deployment
 
 ## Project goals
 
 - Monitor OzBargain RSS feed on a schedule
-- Notify to phone (via Discord) with rich content
+- Notify to phone (via Discord) with rich content and images
 - Avoid IP bans by using a reasonable polling interval and normal User-Agent
 - Keep state so only new deals are sent
-- Allow DIY filters and formatting tweaks
+- Color-coded notifications for easy identification
+- Support both automatic monitoring and manual queries
 
 ## How it works
 
@@ -31,17 +44,37 @@ Cloudflare Worker that monitors the OzBargain RSS feed and pushes new deals to D
 
 ## Notification content
 
-Each Discord embed includes:
+Each Discord embed card includes:
 
-- Title + OzBargain link
-- Thumbnail image (from `ozb:meta image` or RSS)
-- Description snippet
-- Deal price / original price / discount (best-effort parse)
-- Store link (from `ozb:meta url`)
-- Categories (up to 4)
-- Comment count and votes
-- Expiry time (if present)
-- Publish date (footer)
+- **🖼️ Thumbnail image** (from `ozb:meta image`, RSS media, or description)
+- **📝 Title** + clickable OzBargain link
+- **📄 Description snippet** (first 150-200 characters)
+- **💰 Deal price** (if available)
+- **📊 Discount percentage** (if available)
+- **👍👎 Vote counts** (upvotes/downvotes)
+- **💬 Comment count**
+- **🏪 Store link** (from `ozb:meta url`)
+- **🏷️ Categories** (up to 4)
+- **⏰ Expiry time** (if present)
+- **📅 Publish date** (simplified format: YYYY-MM-DD HH:MM)
+
+## Color coding
+
+Different notification types use different colors for easy identification:
+
+- **🔴 Red embeds** (`0xed4245`) - New deals from automatic 15-minute monitoring
+  - Includes "🚨 NEW DEAL DETECTED - Posted: YYYY-MM-DD HH:MM" header
+- **🟠 Orange embeds** (`0xff6a00`) - Manual queries and 3-hour summaries
+  - `/ozb` command: "🔥 Latest OzBargain Deals"
+  - Summary: "📊 Front Page Summary"
+
+## Display order
+
+All notifications show deals in chronological order (oldest to newest):
+- Item #1 = oldest deal (top)
+- Item #15 = newest deal (bottom)
+
+This matches the natural chat flow where you scroll down to see the latest content.
 
 ## Example payload (Discord Webhook)
 
@@ -244,12 +277,25 @@ curl -X POST "https://discord.com/api/v10/applications/<APP_ID>/guilds/<GUILD_ID
 Type `/ozb` in Discord to receive the latest Front Page deals (top 15 by default).
 
 
-## Daily summaries
+## 3-hour summaries
 
-Daily summaries are sent at:
+Front Page summaries are automatically sent every 3 hours at:
 
-- 12:00 AEST/AEDT (UTC 01:00)
-- 18:00 AEST/AEDT (UTC 07:00)
+- 01:00 AEDT (UTC 14:00)
+- 04:00 AEDT (UTC 17:00)
+- 07:00 AEDT (UTC 20:00)
+- 10:00 AEDT (UTC 23:00)
+- 13:00 AEDT (UTC 02:00)
+- 16:00 AEDT (UTC 05:00)
+- 19:00 AEDT (UTC 08:00)
+- 22:00 AEDT (UTC 11:00)
+
+**Summary format:**
+- Rich embed cards (same as `/ozb` command)
+- Each deal includes thumbnail image, price, discount, votes, and comments
+- Orange color coding
+- Automatically splits into multiple messages if over 10 deals (Discord limit)
+- Newest deals at the bottom
 
 You can change the cron schedule in `wrangler.toml` under `[triggers]`.
 

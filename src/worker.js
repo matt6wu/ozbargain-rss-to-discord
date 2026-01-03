@@ -77,7 +77,7 @@ async function handleOzbCommand(payload, env) {
     const xml = await fetchRss(rssUrl, env.RSS_USER_AGENT || DEFAULT_USER_AGENT);
     const items = parseRssItems(xml);
     const limit = toNumber(env.SUMMARY_LIMIT) || 15;
-    const filteredItems = applyFilters(items, env).slice(0, limit);
+    const filteredItems = applyFilters(items, env).slice(0, limit).reverse(); // Oldest first, newest last
 
     if (!filteredItems.length) {
       await sendFollowUp(payload, {
@@ -133,7 +133,7 @@ async function handleOzbCommand(payload, env) {
         title: `${index + 1}. ${truncate(item.title, 200)}`,
         url: item.link,
         description: truncate(item.description, 150),
-        color: 0xff6a00,
+        color: 0xff6a00, // Orange for manual /ozb command
         thumbnail: item.image ? { url: item.image } : undefined,
         fields: fields.length ? fields : undefined,
       };
@@ -529,16 +529,96 @@ async function sendDiscord(item, env) {
 }
 
 async function sendDiscordSummary(items, env, cronLabel) {
-  const payload = buildSummaryPayload(items, env, cronLabel);
-  const res = await fetch(env.DISCORD_WEBHOOK_URL, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(payload),
+  const mention = env.DISCORD_USER_ID ? `<@${env.DISCORD_USER_ID}> ` : "";
+  const label = cronLabel === "manual" ? "Front Page Summary (manual)" : "Front Page Summary";
+
+  // Reverse to show oldest first, newest last
+  const reversedItems = [...items].reverse();
+
+  // Build embeds like /ozb command
+  const embeds = reversedItems.map((item, index) => {
+    const dealPrice = item.pricing?.dealPrice;
+    const discount = item.pricing?.discount;
+    const votesPos = item.ozbMeta?.votesPos;
+    const votesNeg = item.ozbMeta?.votesNeg || 0;
+    const comments = item.ozbMeta?.commentCount;
+
+    const fields = [];
+    if (Number.isFinite(dealPrice)) {
+      fields.push({
+        name: "💰 Price",
+        value: `$${dealPrice.toFixed(2)}`,
+        inline: true,
+      });
+    }
+    if (Number.isFinite(discount) && discount > 0) {
+      fields.push({
+        name: "📊 Discount",
+        value: `${discount}%`,
+        inline: true,
+      });
+    }
+    if (Number.isFinite(votesPos)) {
+      fields.push({
+        name: "👍 Votes",
+        value: `+${votesPos}${votesNeg > 0 ? ` / -${votesNeg}` : ""}`,
+        inline: true,
+      });
+    }
+    if (Number.isFinite(comments)) {
+      fields.push({
+        name: "💬 Comments",
+        value: `${comments}`,
+        inline: true,
+      });
+    }
+
+    return {
+      title: `${index + 1}. ${truncate(item.title, 200)}`,
+      url: item.link,
+      description: truncate(item.description, 150),
+      color: 0xff6a00, // Orange for summary
+      thumbnail: item.image ? { url: item.image } : undefined,
+      fields: fields.length ? fields : undefined,
+    };
   });
 
-  if (!res.ok) {
-    const body = await res.text();
-    throw new Error(`Discord webhook failed: ${res.status} ${body}`);
+  // Split into batches of 10 (Discord limit)
+  const maxEmbedsPerMessage = 10;
+
+  // First batch
+  const payload1 = {
+    content: `${mention}📊 **${label}**`,
+    embeds: embeds.slice(0, maxEmbedsPerMessage),
+  };
+
+  const res1 = await fetch(env.DISCORD_WEBHOOK_URL, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(payload1),
+  });
+
+  if (!res1.ok) {
+    const body = await res1.text();
+    throw new Error(`Discord webhook failed: ${res1.status} ${body}`);
+  }
+
+  // Send remaining embeds if needed
+  if (embeds.length > maxEmbedsPerMessage) {
+    for (let i = maxEmbedsPerMessage; i < embeds.length; i += maxEmbedsPerMessage) {
+      const payload = {
+        embeds: embeds.slice(i, i + maxEmbedsPerMessage),
+      };
+      const res = await fetch(env.DISCORD_WEBHOOK_URL, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (!res.ok) {
+        const body = await res.text();
+        throw new Error(`Discord webhook failed: ${res.status} ${body}`);
+      }
+    }
   }
 }
 
@@ -609,7 +689,9 @@ function buildDiscordPayload(item, env) {
     });
   }
 
-  const content = env.DISCORD_USER_ID ? `<@${env.DISCORD_USER_ID}>` : undefined;
+  const mention = env.DISCORD_USER_ID ? `<@${env.DISCORD_USER_ID}> ` : "";
+  const postTime = item.pubDate ? ` - Posted: ${formatDateTime(item.pubDate)}` : "";
+  const content = `${mention}🚨 **NEW DEAL DETECTED**${postTime}`;
 
   return {
     content,
@@ -618,7 +700,7 @@ function buildDiscordPayload(item, env) {
         title: item.title,
         url: item.link,
         description: truncate(item.description, 200),
-        color: 0xff6a00,
+        color: 0xed4245, // Red for new deals (automatic push)
         fields: fields.length ? fields : undefined,
         thumbnail: item.image ? { url: item.image } : undefined,
         footer: item.pubDate ? { text: item.pubDate } : undefined,
@@ -746,4 +828,18 @@ function mergeSeen(items, seen, limit) {
   }
 
   return merged.slice(0, limit);
+}
+
+function formatDateTime(dateString) {
+  try {
+    const date = new Date(dateString);
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    const hours = String(date.getHours()).padStart(2, '0');
+    const minutes = String(date.getMinutes()).padStart(2, '0');
+    return `${year}-${month}-${day} ${hours}:${minutes}`;
+  } catch {
+    return dateString;
+  }
 }
