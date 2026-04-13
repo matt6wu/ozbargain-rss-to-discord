@@ -3,13 +3,6 @@ const DEFAULT_USER_AGENT =
 
 export default {
   async scheduled(event, env, ctx) {
-    const summaryCrons = new Set([
-      "0 14,17,20,23,2,5,8,11 * * *",
-    ]);
-    if (summaryCrons.has(event.cron)) {
-      ctx.waitUntil(runSummary(env, event.cron));
-      return;
-    }
     ctx.waitUntil(run(env));
   },
 
@@ -63,6 +56,17 @@ async function handleDiscordInteraction(request, env, ctx) {
     return jsonResponse({
       type: 5, // DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE
     });
+  }
+
+  // Handle button click (MESSAGE_COMPONENT)
+  if (payload.type === 3 && payload.data?.component_type === 2) {
+    const customId = payload.data.custom_id;
+    if (customId === "ozb_summary") {
+      ctx.waitUntil(handleSummaryButton(payload, env));
+      return jsonResponse({
+        type: 6, // DEFERRED_UPDATE_MESSAGE
+      });
+    }
   }
 
   return jsonResponse({
@@ -142,14 +146,101 @@ async function handleOzbCommand(payload, env) {
     // Discord limit: max 10 embeds per message
     const maxEmbedsPerMessage = 10;
 
-    // Send first batch (up to 10)
+    // Send first batch (up to 10) with summary button
     await sendFollowUp(payload, {
       content: "🔥 **Latest OzBargain Deals**",
       embeds: embeds.slice(0, maxEmbedsPerMessage),
+      components: [
+        {
+          type: 1,
+          components: [
+            {
+              type: 2,
+              style: 1,
+              label: "📊 Summary",
+              custom_id: "ozb_summary",
+            },
+          ],
+        },
+      ],
       allowed_mentions: { parse: [] },
     });
 
     // Send remaining embeds in additional messages if needed
+    if (embeds.length > maxEmbedsPerMessage) {
+      for (let i = maxEmbedsPerMessage; i < embeds.length; i += maxEmbedsPerMessage) {
+        await sendFollowUp(payload, {
+          embeds: embeds.slice(i, i + maxEmbedsPerMessage),
+          allowed_mentions: { parse: [] },
+        });
+      }
+    }
+  } catch (error) {
+    await sendFollowUp(payload, {
+      content: `Error: ${error.message}`,
+      allowed_mentions: { parse: [] },
+    });
+  }
+}
+
+async function handleSummaryButton(payload, env) {
+  try {
+    const rssUrl = env.RSS_URL || "https://www.ozbargain.com.au/feed";
+    const xml = await fetchRss(rssUrl, env.RSS_USER_AGENT || DEFAULT_USER_AGENT);
+    const items = parseRssItems(xml);
+    const limit = toNumber(env.SUMMARY_LIMIT) || 15;
+    const filteredItems = applyFilters(items, env).slice(0, limit).reverse();
+
+    if (!filteredItems.length) {
+      await sendFollowUp(payload, {
+        content: "No items found.",
+        allowed_mentions: { parse: [] },
+      });
+      return;
+    }
+
+    const embeds = filteredItems.map((item, index) => {
+      const dealPrice = item.pricing?.dealPrice;
+      const discount = item.pricing?.discount;
+      const votesPos = item.ozbMeta?.votesPos;
+      const votesNeg = item.ozbMeta?.votesNeg || 0;
+      const comments = item.ozbMeta?.commentCount;
+
+      const fields = [];
+      if (Number.isFinite(dealPrice)) {
+        fields.push({ name: "💰 Price", value: `$${dealPrice.toFixed(2)}`, inline: true });
+      }
+      if (Number.isFinite(discount) && discount > 0) {
+        fields.push({ name: "📊 Discount", value: `${discount}%`, inline: true });
+      }
+      if (Number.isFinite(votesPos)) {
+        fields.push({
+          name: "👍 Votes",
+          value: `+${votesPos}${votesNeg > 0 ? ` / -${votesNeg}` : ""}`,
+          inline: true,
+        });
+      }
+      if (Number.isFinite(comments)) {
+        fields.push({ name: "💬 Comments", value: `${comments}`, inline: true });
+      }
+
+      return {
+        title: `${index + 1}. ${truncate(item.title, 200)}`,
+        url: item.link,
+        description: truncate(item.description, 150),
+        color: 0xff6a00,
+        thumbnail: item.image ? { url: item.image } : undefined,
+        fields: fields.length ? fields : undefined,
+      };
+    });
+
+    const maxEmbedsPerMessage = 10;
+    await sendFollowUp(payload, {
+      content: "📊 **Front Page Summary**",
+      embeds: embeds.slice(0, maxEmbedsPerMessage),
+      allowed_mentions: { parse: [] },
+    });
+
     if (embeds.length > maxEmbedsPerMessage) {
       for (let i = maxEmbedsPerMessage; i < embeds.length; i += maxEmbedsPerMessage) {
         await sendFollowUp(payload, {
