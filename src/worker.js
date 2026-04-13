@@ -305,9 +305,10 @@ async function run(env, options = {}) {
 
   const historyCount = Math.max(0, toNumber(env.HISTORY_ITEMS) || 0);
   const newSet = new Set(newItems.map((item) => item.guid));
+  const seenSet = new Set(seen);
   const historyItems =
     historyCount > 0
-      ? items.filter((item) => !newSet.has(item.guid)).slice(0, historyCount)
+      ? items.filter((item) => !newSet.has(item.guid) && !seenSet.has(item.guid)).slice(0, historyCount)
       : [];
   const batch = newItems.concat(historyItems);
 
