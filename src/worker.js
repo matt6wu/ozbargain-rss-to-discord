@@ -280,6 +280,7 @@ async function run(env, options = {}) {
   const items = parseRssItems(xml);
 
   if (!items.length) {
+    console.log("[WARN] No items found in RSS feed");
     return { ok: true, message: "No items in feed" };
   }
 
@@ -297,6 +298,7 @@ async function run(env, options = {}) {
   const newItems = options.force
     ? items
     : collectNewItems(items, { lastGuid, seen });
+  console.log(`[INFO] RSS items: ${items.length}, New items: ${newItems.length}`);
   if (!newItems.length) {
     await env.OZB_KV.put("last_guid", items[0].guid);
     await saveSeenGuids(env, items, seen, seenLimit);
@@ -316,16 +318,35 @@ async function run(env, options = {}) {
   if (options.limit && options.limit > 0) {
     filteredItems = filteredItems.slice(0, options.limit);
   }
+
+  let sentCount = 0;
+  let lastError = null;
   for (const item of filteredItems.reverse()) {
-    await sendDiscord(item, env);
+    try {
+      await sendDiscord(item, env);
+      sentCount++;
+    } catch (err) {
+      console.log(`[ERROR] Failed to send deal: ${item.title} — ${err.message}`);
+      lastError = err;
+    }
   }
 
-  await env.OZB_KV.put("last_guid", items[0].guid);
-  await saveSeenGuids(env, items, seen, seenLimit);
+  if (sentCount > 0) {
+    await env.OZB_KV.put("last_guid", items[0].guid);
+    await saveSeenGuids(env, items, seen, seenLimit);
+  }
 
+  if (lastError) {
+    return {
+      ok: false,
+      error: `Sent ${sentCount}/${filteredItems.length} items, some failed: ${lastError.message}`,
+    };
+  }
+
+  console.log(`[INFO] Sent ${sentCount} deals successfully`);
   return {
     ok: true,
-    message: `Sent ${filteredItems.length} new items`,
+    message: `Sent ${sentCount} new items`,
   };
 }
 
@@ -608,16 +629,27 @@ function hasAnyKeyword(haystack, set) {
 
 async function sendDiscord(item, env) {
   const payload = buildDiscordPayload(item, env);
-  const res = await fetch(env.DISCORD_WEBHOOK_URL, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(payload),
-  });
+  const maxRetries = 3;
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    const res = await fetch(env.DISCORD_WEBHOOK_URL, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload),
+    });
 
-  if (!res.ok) {
+    if (res.ok) return;
+
+    if (res.status === 429) {
+      const retryAfter = Number(res.headers.get("retry-after")) || 2;
+      console.log(`[WARN] Discord rate limited, retry ${attempt}/${maxRetries} after ${retryAfter}s`);
+      await new Promise((r) => setTimeout(r, retryAfter * 1000));
+      continue;
+    }
+
     const body = await res.text();
     throw new Error(`Discord webhook failed: ${res.status} ${body}`);
   }
+  throw new Error("Discord webhook failed: rate limited after max retries");
 }
 
 async function sendDiscordSummary(items, env, cronLabel) {
@@ -756,7 +788,7 @@ function buildDiscordPayload(item, env) {
     });
   }
 
-  if (item.ozbMeta?.commentCount !== null) {
+  if (item.ozbMeta?.commentCount != null) {
     fields.push({
       name: "Comments",
       value: `${item.ozbMeta.commentCount}`,
@@ -764,8 +796,8 @@ function buildDiscordPayload(item, env) {
     });
   }
 
-  if (item.ozbMeta?.votesPos !== null) {
-    const neg = item.ozbMeta.votesNeg !== null ? item.ozbMeta.votesNeg : 0;
+  if (item.ozbMeta?.votesPos != null) {
+    const neg = item.ozbMeta.votesNeg != null ? item.ozbMeta.votesNeg : 0;
     fields.push({
       name: "Votes",
       value: `+${item.ozbMeta.votesPos} / -${neg}`,
@@ -796,33 +828,6 @@ function buildDiscordPayload(item, env) {
         fields: fields.length ? fields : undefined,
         thumbnail: item.image ? { url: item.image } : undefined,
         footer: item.pubDate ? { text: item.pubDate } : undefined,
-      },
-    ],
-  };
-}
-
-function buildSummaryPayload(items, env, cronLabel) {
-  const lines = items.map((item, index) => {
-    const title = truncate(item.title, 80);
-    const dealPrice = item.pricing?.dealPrice;
-    const price = Number.isFinite(dealPrice) ? ` — $${dealPrice.toFixed(2)}` : "";
-    return `${index + 1}. [${title}](${item.link})${price}`;
-  });
-
-  const content = env.DISCORD_USER_ID ? `<@${env.DISCORD_USER_ID}>` : undefined;
-  const label =
-    cronLabel === "manual"
-      ? "Front Page Summary (manual)"
-      : "Front Page Summary";
-
-  return {
-    content,
-    embeds: [
-      {
-        title: label,
-        description: lines.join("\n"),
-        color: 0xff6a00,
-        footer: { text: "Source: OzBargain Front Page" },
       },
     ],
   };
@@ -878,7 +883,7 @@ function hexToBytes(hex) {
   const clean = hex.trim();
   const bytes = new Uint8Array(clean.length / 2);
   for (let i = 0; i < bytes.length; i++) {
-    bytes[i] = parseInt(clean.substr(i * 2, 2), 16);
+    bytes[i] = parseInt(clean.substring(i * 2, i * 2 + 2), 16);
   }
   return bytes;
 }
